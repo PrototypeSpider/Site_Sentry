@@ -138,6 +138,32 @@ def test_proxy_identity_mode_requires_https_and_identity(tmp_path):
     assert client.get("/api/scans",headers={"X-Authenticated-User":"alice","X-Forwarded-Proto":"https"}).status_code==200
 
 
+def test_scan_history_is_isolated_by_authenticated_identity(tmp_path, monkeypatch):
+    settings=Settings(database_path=str(tmp_path/"owners.db"),report_dir=str(tmp_path/"owner-reports"),
+        allowed_domains=frozenset({"example.com"}),auth_mode="proxy_identity",max_workers=1)
+    client=create_app(settings).test_client()
+    monkeypatch.setattr("app.validate_target",lambda value,**kwargs: type("Target",(),{"url":"https://example.com/"})())
+    alice={"X-Authenticated-User":"alice","X-Forwarded-Proto":"https"}
+    bob={"X-Authenticated-User":"bob","X-Forwarded-Proto":"https"}
+    response=client.post("/api/scans",headers=alice,json={"url":"https://example.com"})
+    assert response.status_code==202
+    scan_id=response.json["scan_id"]
+    assert client.get("/api/scans",headers=alice).json["scans"]
+    assert client.get("/api/scans",headers=bob).json["scans"]==[]
+    assert client.get(f"/api/scans/{scan_id}",headers=bob).status_code==404
+    assert client.get(f"/api/scans/{scan_id}/findings",headers=bob).status_code==404
+
+
+def test_scan_store_migrates_owner_column_and_filters_history(tmp_path):
+    from storage import ScanStore
+    store=ScanStore(str(tmp_path/"legacy.db"))
+    store.create_scan("alice-scan","https://example.com/","2026-10-19T00:00:00+00:00","standard","alice")
+    assert store.get_scan("alice-scan","alice")["owner_id"]=="alice"
+    assert store.get_scan("alice-scan","bob") is None
+    assert [scan["scan_id"] for scan in store.list_scans(owner_id="alice")]==["alice-scan"]
+    assert store.list_scans(owner_id="bob")==[]
+
+
 def test_multinstance_settings_require_redis(monkeypatch,tmp_path):
     monkeypatch.setenv("SITESENTRY_SINGLE_INSTANCE","false"); monkeypatch.delenv("SITESENTRY_REDIS_URL",raising=False)
     monkeypatch.setenv("SITESENTRY_API_TOKEN","x"*40)
@@ -233,7 +259,8 @@ def test_cancel_queued_scan_is_persisted_and_worker_skips(tmp_path, monkeypatch)
     client=create_app(settings).test_client(); headers={"Authorization":"Bearer secret"}
     from storage import ScanStore
     store=client.application.extensions["sitesentry_store"]
-    store.create_scan("queued-id","https://example.com/","2026-10-19T00:00:00+00:00")
+    owner="token:"+__import__("hashlib").sha256(b"secret").hexdigest()[:24]
+    store.create_scan("queued-id","https://example.com/","2026-10-19T00:00:00+00:00",owner_id=owner)
     response=client.post("/api/scans/queued-id/cancel",headers=headers)
     assert response.status_code==200
     assert client.get("/api/scans/queued-id",headers=headers).json["status"]=="cancelled"

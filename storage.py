@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class ScanStore:
@@ -36,14 +36,19 @@ class ScanStore:
             if version < 3:
                 conn.execute("ALTER TABLE scans ADD COLUMN profile TEXT NOT NULL DEFAULT 'standard'")
                 conn.execute("PRAGMA user_version=3")
+                version = 3
+            if version < 4:
+                conn.execute("ALTER TABLE scans ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+                conn.execute("CREATE INDEX scans_owner_created_idx ON scans(owner_id,created_at)")
+                conn.execute("PRAGMA user_version=4")
 
     def count_created_since(self, since: str) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM scans WHERE created_at >= ? AND status != 'rejected'", (since,)).fetchone()[0])
 
-    def create_scan(self, scan_id: str, target: str, created_at: str, profile: str = "standard"):
+    def create_scan(self, scan_id: str, target: str, created_at: str, profile: str = "standard", owner_id: str = ""):
         with self.connect() as conn:
-            conn.execute("INSERT INTO scans(scan_id,target,status,created_at,profile) VALUES(?,?,?,?,?)", (scan_id,target,"queued",created_at,profile))
+            conn.execute("INSERT INTO scans(scan_id,target,status,created_at,profile,owner_id) VALUES(?,?,?,?,?,?)", (scan_id,target,"queued",created_at,profile,owner_id))
             self.audit(scan_id,"scan_created",created_at,"accepted",conn)
 
     def update_status(self, scan_id: str, status: str, *, result=None, error=None, finished_at=None):
@@ -51,9 +56,12 @@ class ScanStore:
             conn.execute("UPDATE scans SET status=?,result_json=COALESCE(?,result_json),error=?,finished_at=COALESCE(?,finished_at) WHERE scan_id=?", (status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,finished_at,scan_id))
             self.audit(scan_id,"scan_status",finished_at or "",status,conn)
 
-    def get_scan(self, scan_id: str):
+    def get_scan(self, scan_id: str, owner_id: str | None = None):
         with self.connect() as conn:
-            row=conn.execute("SELECT * FROM scans WHERE scan_id=?",(scan_id,)).fetchone()
+            if owner_id is None:
+                row=conn.execute("SELECT * FROM scans WHERE scan_id=?",(scan_id,)).fetchone()
+            else:
+                row=conn.execute("SELECT * FROM scans WHERE scan_id=? AND owner_id=?",(scan_id,owner_id)).fetchone()
         if not row: return None
         result=dict(row); encoded=result.pop("result_json"); result["result"]=json.loads(encoded) if encoded else None
         return result
@@ -63,9 +71,12 @@ class ScanStore:
             row=conn.execute("SELECT status FROM scans WHERE scan_id=?",(scan_id,)).fetchone()
         return row["status"] if row else None
 
-    def list_scans(self, limit=100):
+    def list_scans(self, limit=100, owner_id: str | None = None):
         with self.connect() as conn:
-            rows=conn.execute("SELECT scan_id,target,status,created_at,finished_at,error,profile FROM scans ORDER BY created_at DESC LIMIT ?",(limit,)).fetchall()
+            if owner_id is None:
+                rows=conn.execute("SELECT scan_id,target,status,created_at,finished_at,error,profile FROM scans ORDER BY created_at DESC LIMIT ?",(limit,)).fetchall()
+            else:
+                rows=conn.execute("SELECT scan_id,target,status,created_at,finished_at,error,profile FROM scans WHERE owner_id=? ORDER BY created_at DESC LIMIT ?",(owner_id,limit)).fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod

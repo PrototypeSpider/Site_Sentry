@@ -212,7 +212,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             if (work_queue.llen(work_queue_key)>=settings.max_pending_scans if work_queue_key else work_queue.full()): return jsonify({"error":"scan_queue_full"}),429
             allowed,reason=limiter.allow(client,per_minute=settings.per_minute_limit,per_day=settings.daily_quota_per_client,global_per_day=settings.daily_scan_quota)
             if not allowed: return jsonify({"error":reason}),429
-            store.create_scan(scan_id,target.url,created,profile)
+            store.create_scan(scan_id,target.url,created,profile,client)
             if work_queue_key:
                 work_queue.rpush(work_queue_key,json.dumps([scan_id,target.url,profile]))
             else:
@@ -223,30 +223,30 @@ def create_app(settings: Settings | None = None) -> Flask:
     def list_scans():
         try: limit=min(max(int(request.args.get("limit","50")),1),100)
         except ValueError: return jsonify({"error":"invalid_limit"}),400
-        return jsonify({"scans":store.list_scans(limit)})
+        return jsonify({"scans":store.list_scans(limit,identity())})
 
     @app.get("/api/scans/<scan_id>")
     def get_scan(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         return jsonify({key:value for key,value in scan.items() if key!="result"}|{"summary":scan["result"].get("summary") if scan["result"] else None})
 
     @app.get("/api/scans/<scan_id>/findings")
     def findings(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         return jsonify({"scan_id":scan_id,"findings":scan["result"].get("findings",[]) if scan["result"] else []})
 
     @app.get("/api/scans/<scan_id>/explanations")
     def explanations(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         items=scan["result"].get("findings",[]) if scan["result"] else []
         return jsonify({"scan_id":scan_id,"explanations":[{"check_id":f["check_id"],"explanation":f["explanation"],"evidence":f["evidence"],"recommendation":f["recommendation"],"source":"deterministic_rule"} for f in items]})
 
     @app.get("/api/scans/<scan_id>/xai-report")
     def xai_report(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         if not scan["result"]: return jsonify({"error":"report_not_ready"}),409
         from xai.report import generate_xai_report
@@ -254,7 +254,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/api/scans/<scan_id>/report")
     def report(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         if not scan["result"]: return jsonify({"error":"report_not_ready"}),409
         fmt=request.args.get("format","json").lower()
@@ -264,10 +264,10 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/api/scans/<scan_id>/cancel")
     def cancel_scan(scan_id):
-        scan=store.get_scan(scan_id)
+        scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         with scan_lock:
-            scan=store.get_scan(scan_id)
+            scan=store.get_scan(scan_id,identity())
             if scan["status"]!="queued": return jsonify({"error":"scan_not_cancellable","status":scan["status"]}),409
             # Queue ownership is serialized with the worker's dequeue transition by
             # scan_lock; queued rows are cancellable until that transition commits.
