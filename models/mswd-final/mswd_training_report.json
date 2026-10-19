@@ -1,0 +1,280 @@
+{
+  "model_version": "mswd-malicious-site-1.0",
+  "task": "malicious website classification; advisory only; not a SiteSentry vulnerability finding",
+  "source": "https://data.mendeley.com/datasets/n8hkzbzhb4/1",
+  "source_license": "CC BY 4.0",
+  "dataset_sha256": "d127ef3f2b8cc931e0c81dce9454445884b38215b6b6c47825e97a865159ccb4",
+  "dataset_rows": 5013,
+  "labeled_rows": 4000,
+  "unlabeled_rows_excluded": 1013,
+  "label_counts": {
+    "0": 2494,
+    "1": 1506
+  },
+  "label_mapping": {
+    "0": "benign",
+    "1": "malicious"
+  },
+  "label_mapping_status": "inferred, not explicitly documented in supplied CSV/ZIP; inferred from source description and strong alignment of class 1 with threat-intelligence indicators",
+  "zip_validation": {
+    "zip_checked": true,
+    "zip_matches_csv": true
+  },
+  "feature_columns": [
+    "Tamanho",
+    "Hosting_Gratuito",
+    "Idade_Dias",
+    "Recente_30d",
+    "Dias_Alteracao",
+    "Dias_Expiracao",
+    "WHOIS_Privado",
+    "Pais_CC",
+    "Num_IPs",
+    "ASN",
+    "Has_MX",
+    "Num_MX",
+    "Has_SPF",
+    "SPF_Valido",
+    "SPF_Permissivo",
+    "Has_DMARC",
+    "DMARC_Politica",
+    "Has_DKIM",
+    "HTTPS",
+    "Certificate_Valid",
+    "Lets_Encrypt",
+    "Number_Forms",
+    "Password_Form",
+    "External_Links",
+    "Iframe",
+    "Redirect",
+    "Number_Cookies",
+    "Secure_Flag_Cookies",
+    "HttpOnly_Cookies",
+    "External_Cookie_Domain",
+    "domain_length",
+    "has_hsts",
+    "has_csp",
+    "has_x_frame_options",
+    "has_x_content_type_options",
+    "has_x_xss_protection",
+    "x_powered_by",
+    "uses_php",
+    "uses_nodejs",
+    "num_pontos",
+    "num_barras",
+    "num_menos",
+    "num_subdomains",
+    "num_param",
+    "entropiaURL",
+    "num_homoglyph"
+  ],
+  "excluded_columns": [
+    "Domain",
+    "IP",
+    "SHA256",
+    "class",
+    "google_safe_browsing_report",
+    "google_safebrowsing_report",
+    "vt_blacklisted",
+    "vt_harmless",
+    "vt_malicious",
+    "vt_malicious_engines",
+    "vt_reputation_score",
+    "vt_suspicious",
+    "vt_undetected"
+  ],
+  "numeric_columns": [
+    "Tamanho",
+    "Hosting_Gratuito",
+    "Idade_Dias",
+    "Recente_30d",
+    "Dias_Alteracao",
+    "Dias_Expiracao",
+    "WHOIS_Privado",
+    "Num_IPs",
+    "Has_MX",
+    "Num_MX",
+    "Has_SPF",
+    "SPF_Valido",
+    "SPF_Permissivo",
+    "Has_DMARC",
+    "Has_DKIM",
+    "HTTPS",
+    "Certificate_Valid",
+    "Lets_Encrypt",
+    "Number_Forms",
+    "Password_Form",
+    "External_Links",
+    "Iframe",
+    "Redirect",
+    "Number_Cookies",
+    "Secure_Flag_Cookies",
+    "HttpOnly_Cookies",
+    "External_Cookie_Domain",
+    "domain_length",
+    "has_hsts",
+    "has_csp",
+    "has_x_frame_options",
+    "has_x_content_type_options",
+    "has_x_xss_protection",
+    "uses_php",
+    "uses_nodejs",
+    "num_pontos",
+    "num_barras",
+    "num_menos",
+    "num_subdomains",
+    "num_param",
+    "entropiaURL",
+    "num_homoglyph"
+  ],
+  "categorical_columns": [
+    "Pais_CC",
+    "ASN",
+    "DMARC_Politica",
+    "x_powered_by"
+  ],
+  "split": {
+    "method": "GroupShuffleSplit by normalized URL hostname",
+    "random_state": 42,
+    "test_fraction_requested": 0.25,
+    "train_rows": 3001,
+    "test_rows": 999,
+    "train_domains": 2982,
+    "test_domains": 995,
+    "group_overlap": [],
+    "train_label_counts": {
+      "0": 1894,
+      "1": 1107
+    },
+    "test_label_counts": {
+      "0": 600,
+      "1": 399
+    }
+  },
+  "baseline": {
+    "majority_class": 0,
+    "accuracy": 0.6006006006006006,
+    "macro_f1": 0.37523452157598497,
+    "confusion_matrix_labels_0_1": [
+      [
+        600,
+        0
+      ],
+      [
+        399,
+        0
+      ]
+    ]
+  },
+  "metrics": {
+    "logistic_regression_calibrated": {
+      "accuracy": 0.982982982982983,
+      "macro_f1": 0.9822272686839724,
+      "roc_auc": 0.9975689223057644,
+      "brier_score": 0.014277331211043636,
+      "per_class": {
+        "0": {
+          "precision": 0.9818181818181818,
+          "recall": 0.99,
+          "f1": 0.9858921161825727,
+          "support": 600
+        },
+        "1": {
+          "precision": 0.9847715736040609,
+          "recall": 0.9724310776942355,
+          "f1": 0.978562421185372,
+          "support": 399
+        }
+      },
+      "confusion_matrix_labels_0_1": [
+        [
+          594,
+          6
+        ],
+        [
+          11,
+          388
+        ]
+      ],
+      "malicious_false_positive_rate": 0.01,
+      "malicious_false_negative_rate": 0.02756892230576441
+    },
+    "random_forest": {
+      "accuracy": 0.977977977977978,
+      "macro_f1": 0.9768662372110648,
+      "roc_auc": 0.9961612364243942,
+      "brier_score": 0.02419654924671241,
+      "per_class": {
+        "0": {
+          "precision": 0.9676375404530745,
+          "recall": 0.9966666666666667,
+          "f1": 0.9819376026272578,
+          "support": 600
+        },
+        "1": {
+          "precision": 0.994750656167979,
+          "recall": 0.949874686716792,
+          "f1": 0.9717948717948718,
+          "support": 399
+        }
+      },
+      "confusion_matrix_labels_0_1": [
+        [
+          598,
+          2
+        ],
+        [
+          20,
+          379
+        ]
+      ],
+      "malicious_false_positive_rate": 0.0033333333333333335,
+      "malicious_false_negative_rate": 0.05012531328320802
+    },
+    "mlp_deep_learning": {
+      "accuracy": 0.97997997997998,
+      "macro_f1": 0.9790451818601335,
+      "roc_auc": 0.9956516290726817,
+      "brier_score": 0.016011415519702997,
+      "per_class": {
+        "0": {
+          "precision": 0.9754098360655737,
+          "recall": 0.9916666666666667,
+          "f1": 0.9834710743801653,
+          "support": 600
+        },
+        "1": {
+          "precision": 0.987146529562982,
+          "recall": 0.9624060150375939,
+          "f1": 0.9746192893401016,
+          "support": 399
+        }
+      },
+      "confusion_matrix_labels_0_1": [
+        [
+          595,
+          5
+        ],
+        [
+          15,
+          384
+        ]
+      ],
+      "malicious_false_positive_rate": 0.008333333333333333,
+      "malicious_false_negative_rate": 0.03759398496240601
+    }
+  },
+  "artifacts": {
+    "logistic_regression_calibrated": "models\\mswd-final\\logistic_regression_calibrated.joblib",
+    "random_forest": "models\\mswd-final\\random_forest.joblib",
+    "mlp_deep_learning": "models\\mswd-final\\mlp_deep_learning.joblib"
+  },
+  "limitations": [
+    "The 1,013 unlabeled rows were excluded.",
+    "Label 0/1 semantic mapping is inferred and needs confirmation from dataset authors.",
+    "The held-out set is hostname-grouped but not a separately locked external-domain benchmark.",
+    "Dataset signals were collected at an unknown or fixed time and may be stale.",
+    "VirusTotal/Safe Browsing features were excluded; performance may still reflect collection-source and dataset biases.",
+    "Predictions do not verify exploitability and do not override SiteSentry rule findings."
+  ]
+}

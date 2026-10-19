@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="2;url=http://127.0.0.1:8501">
+  <title>SiteSentry Dashboard</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0d1520; color: #e6edf5; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+    main { max-width: 600px; margin: 24px; padding: 32px; background: #142030; border: 1px solid #26394f; border-radius: 14px; }
+    a { color: #5ac8fa; }
+    code { color: #d2e6f5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SiteSentry Dashboard</h1>
+    <p>The integrated dashboard runs in Streamlit and sends requests server-to-server. API credentials are not placed in this static page.</p>
+    <p>If it does not open automatically, start the backend and dashboard from the project root:</p>
+    <ol>
+      <li><code>python app.py</code></li>
+      <li><code>python -m streamlit run dashboard/app.py</code></li>
+    </ol>
+    <p><a href="http://127.0.0.1:8501">Open the local SiteSentry dashboard</a></p>
+  </main>
+</body>
+</html>

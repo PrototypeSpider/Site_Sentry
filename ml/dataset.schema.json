@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SiteSentry labeled configuration review dataset",
+  "type": "object",
+  "required": ["schema_version", "target_definition", "labeling_policy", "source", "collected_at", "reviewer", "records_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "target_definition": {"const": "advisory configuration-review label; not vulnerability exploitability"},
+    "labeling_policy": {"type": "string", "minLength": 20},
+    "source": {"type": "string", "minLength": 3},
+    "collected_at": {"type": "string", "format": "date-time"},
+    "reviewer": {"type": "string", "minLength": 2},
+    "records_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false
+}

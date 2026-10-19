@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+reports/out/
+models/*.joblib
+models/*.pkl
+data/*.csv
+data/*.sqlite3
+data/*.db
+ml/*.csv
+ml/*.zip
+.env

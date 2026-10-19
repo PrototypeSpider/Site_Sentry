@@ -1,0 +1,103 @@
+{
+  "artifact": "logistic_regression_calibrated.joblib",
+  "sha256": "4e053dbf949885fb731e5107faab05523091bfbbca432eb35fd9e53996f92800",
+  "model_version": "mswd-malicious-site-1.0:logistic_regression_calibrated",
+  "task": "mswd_malicious_site",
+  "feature_columns": [
+    "Tamanho",
+    "Hosting_Gratuito",
+    "Idade_Dias",
+    "Recente_30d",
+    "Dias_Alteracao",
+    "Dias_Expiracao",
+    "WHOIS_Privado",
+    "Pais_CC",
+    "Num_IPs",
+    "ASN",
+    "Has_MX",
+    "Num_MX",
+    "Has_SPF",
+    "SPF_Valido",
+    "SPF_Permissivo",
+    "Has_DMARC",
+    "DMARC_Politica",
+    "Has_DKIM",
+    "HTTPS",
+    "Certificate_Valid",
+    "Lets_Encrypt",
+    "Number_Forms",
+    "Password_Form",
+    "External_Links",
+    "Iframe",
+    "Redirect",
+    "Number_Cookies",
+    "Secure_Flag_Cookies",
+    "HttpOnly_Cookies",
+    "External_Cookie_Domain",
+    "domain_length",
+    "has_hsts",
+    "has_csp",
+    "has_x_frame_options",
+    "has_x_content_type_options",
+    "has_x_xss_protection",
+    "x_powered_by",
+    "uses_php",
+    "uses_nodejs",
+    "num_pontos",
+    "num_barras",
+    "num_menos",
+    "num_subdomains",
+    "num_param",
+    "entropiaURL",
+    "num_homoglyph"
+  ],
+  "metrics": {
+    "accuracy": 0.982982982982983,
+    "macro_f1": 0.9822272686839724,
+    "roc_auc": 0.9975689223057644,
+    "brier_score": 0.014277331211043636,
+    "per_class": {
+      "0": {
+        "precision": 0.9818181818181818,
+        "recall": 0.99,
+        "f1": 0.9858921161825727,
+        "support": 600
+      },
+      "1": {
+        "precision": 0.9847715736040609,
+        "recall": 0.9724310776942355,
+        "f1": 0.978562421185372,
+        "support": 399
+      }
+    },
+    "confusion_matrix_labels_0_1": [
+      [
+        594,
+        6
+      ],
+      [
+        11,
+        388
+      ]
+    ],
+    "malicious_false_positive_rate": 0.01,
+    "malicious_false_negative_rate": 0.02756892230576441
+  },
+  "limitations": [],
+  "label_mapping": {
+    "0": "benign (inferred)",
+    "1": "malicious (inferred)"
+  },
+  "label_mapping_status": null,
+  "created_at": "2026-10-19T06:25:45.435551+00:00",
+  "runtime": {
+    "python": "3.12.10",
+    "scikit_learn": "1.9.1",
+    "numpy": "2.5.3",
+    "pandas": "3.0.6",
+    "shap": "0.52.0",
+    "joblib": "1.6.0"
+  },
+  "load_instruction": "Load with joblib in an isolated, trusted Python environment using the recorded compatible dependencies.",
+  "trusted_pickle_warning": "Only load this artifact from a trusted source; joblib uses Python pickle serialization."
+}

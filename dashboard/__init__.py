@@ -1,0 +1,1 @@
+"""SiteSentry Streamlit dashboard package."""

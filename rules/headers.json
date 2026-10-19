@@ -1,0 +1,15 @@
+{
+  "rule_version": "1.0",
+  "review_thresholds": {
+    "hsts_minimum_max_age_seconds": 15552000,
+    "hsts_received_over_https": true,
+    "x_content_type_options_expected": "nosniff",
+    "clickjacking_valid_x_frame_options": ["deny", "sameorigin"]
+  },
+  "check_ids": [
+    "https.reachable", "tls.certificate_validation", "tls.certificate_expiry",
+    "header.hsts", "header.csp", "header.clickjacking_protection",
+    "header.x_content_type_options", "header.referrer_policy", "header.permissions_policy"
+  ],
+  "limitations": ["Header absence alone does not establish exploitability.", "HSTS thresholds are a review heuristic, not a universal policy requirement."]
+}
