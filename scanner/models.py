@@ -26,6 +26,8 @@ class Finding:
     ml_assessment: dict[str, Any] = field(default_factory=lambda: {"status": "not_configured", "model": None, "prediction": None, "confidence": None})
     xai: dict[str, Any] = field(default_factory=dict)
     ai_explanation: dict[str, Any] = field(default_factory=lambda: {"status": "not_configured", "provider": None, "content": None})
+    risk: dict[str, Any] = field(default_factory=dict)
+    standards: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +68,8 @@ class ScanResult:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        from .risk import aggregate_risk, annotate_findings
+        findings = annotate_findings(self.findings)
         return {
             "schema_version": "1.0",
             "scan_id": self.scan_id,
@@ -78,7 +82,8 @@ class ScanResult:
             "modules_executed": self.modules_executed,
             "summary": self.summary,
             "metrics": self.metrics,
-            "findings": [finding.to_dict() for finding in self.findings],
+            "findings": findings,
+            "risk_summary": aggregate_risk(findings),
             "errors": self.errors,
             "limitations": self.limitations,
             "metadata": self.metadata,

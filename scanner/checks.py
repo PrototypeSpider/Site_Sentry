@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import re
 
 from .models import Finding
 from .transport import HttpObservation
@@ -56,9 +57,14 @@ def evaluate_observation(observation: HttpObservation) -> list[Finding]:
             if max_age < 0:
                 status = "finding"
                 evidence += " Invalid or missing max-age directive."
-            elif max_age < 15_552_000:
+            elif max_age < 31_536_000:
                 status = "warning"
-                evidence += f" max-age is {max_age} seconds, below the scanner's 180-day review threshold."
+                evidence += f" max-age is {max_age} seconds, below the scanner's one-year review threshold."
+            if max_age >= 0:
+                evidence += (" includeSubDomains is enabled." if "includesubdomains" in directives else
+                             " includeSubDomains is absent; confirm subdomain policy requirements before enabling it.")
+                if "preload" in directives:
+                    evidence += " preload is requested; verify preload eligibility and all subdomains before submission."
         elif key == "x-content-type-options" and value and value.strip().lower() != "nosniff":
             status = "finding"
             evidence += " Expected nosniff directive was not observed."
@@ -68,7 +74,31 @@ def evaluate_observation(observation: HttpObservation) -> list[Finding]:
         findings.append(Finding(check_id, label, status, "informational" if status == "pass" else severity, evidence,
                                 f"{purpose} Absence alone does not establish an exploitable vulnerability.", recommendation))
 
-    csp = headers.get("content-security-policy", "").lower()
+    csp_value = headers.get("content-security-policy", "")
+    csp = csp_value.lower()
+    if csp_value:
+        directives = _parse_directives(csp_value)
+        default_sources = directives.get("default-src", "")
+        script_sources = directives.get("script-src", default_sources)
+        policy_issues = []
+        if not default_sources:
+            policy_issues.append("default-src is absent; resource-type defaults may be broader than intended")
+        for directive_name, directive_value in directives.items():
+            if "*" in directive_value:
+                policy_issues.append(f"{directive_name} contains a wildcard source")
+        if "'unsafe-eval'" in script_sources:
+            policy_issues.append("script sources allow unsafe-eval")
+        has_nonce_or_hash = any(token.startswith(("'nonce-", "'sha256-", "'sha384-", "'sha512-")) for token in script_sources.split())
+        if "'unsafe-inline'" in script_sources and not has_nonce_or_hash:
+            policy_issues.append("script sources allow unsafe-inline without a nonce or hash")
+        if policy_issues:
+            csp_finding = next((item for item in findings if item.check_id == "header.csp"), None)
+            if csp_finding:
+                csp_finding.status = "warning"
+                csp_finding.severity = "medium"
+                csp_finding.evidence += " Policy review: " + "; ".join(policy_issues) + "."
+                csp_finding.explanation += " The observed policy also contains directives that merit review."
+                csp_finding.recommendation = "Review broad sources and unsafe script directives; test a restrictive policy in report-only mode before enforcement."
     xfo = headers.get("x-frame-options", "").lower()
     xfo_valid = xfo in {"deny", "sameorigin"}
     framing_block = "frame-ancestors" in csp or xfo_valid
@@ -79,7 +109,43 @@ def evaluate_observation(observation: HttpObservation) -> list[Finding]:
         "Framing restrictions can reduce clickjacking risk; whether framing is unsafe depends on the application and its flows.",
         "Where embedding is not required, configure CSP frame-ancestors; use X-Frame-Options as a compatibility fallback.",
     ))
+    findings.append(_cookie_security(headers.get("set-cookie"), https))
     return findings
+
+
+def _cookie_security(value: str | None, https: bool) -> Finding:
+    if not value:
+        return Finding("header.cookie_security", "Cookie security attributes", "not_assessed", "informational",
+            "No Set-Cookie header was visible in the inspected response.",
+            "Cookies may be set on other paths or only after application interaction; this response alone is not a complete cookie inventory.",
+            "Review session and sensitive cookies on authenticated application flows using an authorized assessment.")
+    # Never include cookie names or values in evidence. Multiple Set-Cookie
+    # headers may have been joined by the HTTP layer; split conservatively.
+    segments = [part.strip() for part in re.split(r",\s*(?=[!#$%&'*+.^_`|~0-9A-Za-z-]+=)", value) if part.strip()]
+    missing_secure = missing_http_only = missing_samesite = 0
+    none_without_secure = 0
+    for segment in segments:
+        attributes = {piece.strip().partition("=")[0].lower(): piece.strip().partition("=")[2].strip().strip('"').lower()
+                      for piece in segment.split(";")[1:] if piece.strip()}
+        if "secure" not in attributes:
+            missing_secure += 1
+        if "httponly" not in attributes:
+            missing_http_only += 1
+        if "samesite" not in attributes:
+            missing_samesite += 1
+        if attributes.get("samesite") == "none" and "secure" not in attributes:
+            none_without_secure += 1
+    issues = []
+    if missing_secure: issues.append(f"Secure missing on {missing_secure} observed cookie(s)")
+    if missing_http_only: issues.append(f"HttpOnly missing on {missing_http_only} observed cookie(s)")
+    if missing_samesite: issues.append(f"SameSite missing on {missing_samesite} observed cookie(s)")
+    if none_without_secure: issues.append(f"SameSite=None without Secure on {none_without_secure} observed cookie(s)")
+    status = "warning" if issues else "pass"
+    return Finding("header.cookie_security", "Cookie security attributes", status,
+        "medium" if issues else "informational",
+        f"Inspected {len(segments)} Set-Cookie value(s); " + ("; ".join(issues) if issues else "Secure, HttpOnly, and SameSite attributes were observed."),
+        "Cookie flags reduce browser-side exposure and cross-site request risks, but correct attributes depend on cookie purpose and application behavior. Cookie values and names are intentionally omitted.",
+        "Set Secure for HTTPS cookies, HttpOnly for cookies not read by client scripts, and an appropriate SameSite policy; keep SameSite=None only with Secure.")
 
 
 def evaluate_advanced_observation(observation: HttpObservation) -> list[Finding]:
@@ -149,9 +215,13 @@ def evaluate_advanced_observation(observation: HttpObservation) -> list[Finding]
 def _parse_directives(value: str) -> dict[str, str]:
     directives = {}
     for part in value.split(";"):
-        name, sep, directive_value = part.strip().partition("=")
+        token = part.strip()
+        if "=" in token:
+            name, _, directive_value = token.partition("=")
+        else:
+            name, _, directive_value = token.partition(" ")
         if name:
-            directives[name.lower()] = directive_value.strip() if sep else ""
+            directives[name.lower()] = directive_value.strip()
     return directives
 
 

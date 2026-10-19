@@ -26,7 +26,7 @@ Latest local verification:
 - [x] Flask API request validation and response handling covered by tests; documented in `README.md`.
 - [x] Environment-driven settings; `.env` ignored and credential patterns checked in the staged/release source.
 - [x] Structured logging, generic API error handling and authenticated health endpoint implemented.
-- [x] SQLite migrations, schema version 4, indexes, and foreign-key enforcement implemented.
+- [x] SQLite migrations, schema version 5, indexes, and foreign-key enforcement implemented; version 5 adds owner-scoped finding workflow records and audit events.
 - [x] Bounded local scan queue/workers and shared Redis queue mode implemented.
 - [x] Authenticated scan history is isolated by identity; migration adds owner IDs and regression tests cover list/detail isolation.
 

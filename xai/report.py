@@ -72,6 +72,7 @@ def generate_xai_report(scan: dict) -> dict:
     duration = metrics.get("scan_duration_seconds")
     scan_state = scan.get("scan_status", scan.get("status", "unknown"))
     profile = (scan.get("metadata") or {}).get("scan_profile", scan.get("profile", "standard"))
+    risk_summary = scan.get("risk_summary") or {}
 
     if scan_state == "error":
         overview = "The scan failed before it could complete. Treat uncollected checks as unknown, not as passes."
@@ -100,6 +101,7 @@ def generate_xai_report(scan: dict) -> dict:
         f"- High/critical findings: **{high_critical}**",
         f"- TLS certificate verification: **{'verified' if tls_verified is True else 'not verified' if tls_verified is False else 'not assessed'}**",
         f"- Scan duration: **{f'{duration:.1f} seconds' if isinstance(duration, (int, float)) else 'not available'}**",
+        f"- Advisory prioritization score: **{risk_summary.get('score', 'not available')}/100**",
         "",
         "## Findings and rationale",
         "",
@@ -122,6 +124,16 @@ def generate_xai_report(scan: dict) -> dict:
             "",
         ])
         xai = item.get("xai") or {}
+        risk = item.get("risk") or {}
+        if risk:
+            confidence = risk.get("confidence")
+            confidence_text = f"{confidence:.0%}" if isinstance(confidence, (int, float)) else "not available"
+            lines.extend([f"**Risk priority:** {_text(risk.get('score', 0))}/100 · **Evidence confidence:** {_text(confidence_text)}", "",
+                _text(risk.get("rationale")), ""])
+        for mapping in item.get("standards", []):
+            lines.append(f"**Guidance mapping:** {_text(mapping.get('framework'))} {_text(mapping.get('version'))} · {_text(mapping.get('control'))} — {_text(mapping.get('applicability'))}")
+        if item.get("standards"):
+            lines.append("")
         contributions = xai.get("feature_contributions") or []
         if xai.get("status") == "available" and contributions:
             lines.append("**Model feature contributions (advisory):**")

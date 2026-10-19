@@ -12,6 +12,7 @@ def test_dashboard_url_normalization_defers_final_scope_validation():
     assert dashboard_api.normalize_url("http://example.com:80/path") == "http://example.com:80/path"
     assert dashboard_api.normalize_url("http://example.com:8080") is None
     assert dashboard_api.normalize_url("http://user:pass@example.com") is None
+    assert dashboard_api.normalize_url("https://example.com/path?access_token=secret") is None
     assert dashboard_api.normalize_url("file:///etc/passwd") is None
 
 

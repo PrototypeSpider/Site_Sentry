@@ -2,17 +2,23 @@
 
 Passive website security assessment prototype with a Flask backend and Streamlit dashboard.
 
+For the complete architecture, scan lifecycle, check/model logic, XAI, setup instructions, and troubleshooting guide, see [SiteSentry Project Architecture and Operations Guide](docs/SiteSentry_Project_Architecture_and_Operations_Guide.md).
+
 ## Implemented
 
 For the line-by-line checklist and explicit pending items, see [CHECKLIST_STATUS.md](CHECKLIST_STATUS.md).
 
 - Flask API with health, asynchronous scan submission, status/history, findings, deterministic explanations, cancellation, and JSON/PDF report endpoints.
-- Configurable bearer-token authentication, approved-domain allowlist, authorization reference requirement in scoped mode, per-process limits for single-instance use or atomic shared rate/quota limits with Redis, bounded queue/workers, request size limit, and explicit network timeouts.
-- URL validation for HTTP/HTTPS and standard ports; rejects URL credentials, malformed hosts, private/reserved/loopback/link-local IPs, and out-of-scope names.
+- Configurable bearer-token authentication, optional approved-domain allowlist, per-process limits for single-instance use or atomic shared rate/quota limits with Redis, bounded queue/workers, request size limit, and explicit network timeouts. The client cannot assert authorization through a request field; deployment scope is enforced by backend settings.
+- URL validation for HTTP/HTTPS and standard ports; rejects embedded credentials, query strings (including query-bearing redirects), malformed hosts, private/reserved/loopback/link-local IPs, and out-of-scope names. Queries are excluded to avoid sending URL-carried secrets and to keep findings/history free of sensitive parameter values.
 - Connection-time IP pinning while preserving original host SNI and TLS hostname verification; manually follows redirects only after validating each new destination.
 - DNS A/AAAA/CNAME/NS/TXT observations; TLS chain/hostname verification, certificate validity/expiry, negotiated TLS version/cipher; HTTP status, content type, redirects, bounded response bytes; security-header checks including directives.
-- Normalized findings with stable IDs, evidence, status (`pass`, `finding`, `warning`, `fail`, `error`, `not_assessed`, `inconclusive`), severity, recommendation, rule version, timestamp, ML/XAI/AI fields. A failed scan does not pass checks.
-- SQLite scan history and audit events with schema version, JSON integrity digest, PDF export from the canonical stored result.
+- Normalized findings with stable IDs, evidence, status (`pass`, `finding`, `warning`, `fail`, `error`, `not_assessed`, `inconclusive`), severity, separate advisory confidence and evidence-backed risk prioritization, recommendation, partial standards mapping, rule version, timestamp, ML/XAI/AI fields. Related findings are deduplicated by check family in the overall score. A failed scan does not pass checks.
+- HSTS max-age/subdomain/preload observations, CSP source-policy review, and cookie Secure/HttpOnly/SameSite attribute checks. Cookie names and values are not emitted as finding evidence; expected attributes remain application-dependent.
+- Advanced profile applies in-process passive fingerprints inspired by testssl.sh, WhatWeb, Nmap, wafw00f, Nikto, and Nuclei methods. These inspect the existing response/TLS handshake only and do not invoke the external tools, crawl, probe ports, or send payloads.
+- SQLite scan history and audit events with schema version 5, identity-scoped scan ownership and finding workflow, JSON integrity digest, PDF export from the canonical stored result.
+- Owner-protected remediation workflow for marking findings acknowledged/fixed, with bounded notes. A “fixed” label is only confirmed after a same-host/port/path rescan reports the check as passing. Historical comparisons report new, resolved, recurring, changed and unchanged checks.
+- A bounded, passive CI command with explicit authorization confirmation, deterministic exit codes and configurable severity/risk thresholds.
 - Optional calibrated Logistic Regression baseline for a defined advisory configuration-review label, grouped holdout by target group, per-class precision/recall/F1, macro F1, confusion matrix, FPR when a negative label is present, model/data/feature version and dataset hash. Predictions remain advisory. SHAP attributions are available as non-causal model explanations.
 - Optional Gemini/Grok interface; bounded/redacted evidence, structured response validation, bounded client timeouts/retries, deterministic fallback. Scan data remains available if AI fails.
 - Optional research-only MLP comparison. Do not use it unless it beats the logistic baseline on representative labeled data.
@@ -48,11 +54,13 @@ python -m pip install -r dashboard/requirements.txt
 python -m streamlit run dashboard/app.py
 ```
 
-The dashboard defaults to `http://127.0.0.1:5000`; set `SITESENTRY_API_URL` on the dashboard process when the backend is hosted elsewhere. The backend allowlist and authorization-reference checks remain authoritative.
+The dashboard defaults to `http://127.0.0.1:5000`; set `SITESENTRY_API_URL` on the dashboard process when the backend is hosted elsewhere. The backend authentication and optional domain allowlist remain authoritative.
 
-Endpoints: `GET /api/health`, `POST /api/scans`, `GET /api/scans`, `GET /api/scans/<id>`, `GET /api/scans/<id>/findings`, `GET /api/scans/<id>/explanations`, `GET /api/scans/<id>/xai-report`, `GET /api/scans/<id>/report?format=json|pdf`, `POST /api/scans/<id>/cancel`, `GET /api/models`, and `POST /api/models/<model-id>/predict`.
+Endpoints: `GET /api/health`, `POST /api/scans`, `GET /api/scans`, `GET /api/scans/<id>`, `GET /api/scans/<id>/findings`, `GET /api/scans/<id>/workflow`, `PUT /api/scans/<id>/findings/<check-id>/workflow`, `GET /api/scans/<current-id>/compare/<baseline-id>`, `GET /api/scans/<id>/explanations`, `GET /api/scans/<id>/xai-report`, `GET /api/scans/<id>/report?format=json|pdf`, `POST /api/scans/<id>/cancel`, `GET /api/models`, and `POST /api/models/<model-id>/predict`.
 
-Choose `profile` as `quick`, `standard`, or `advanced` in `POST /api/scans`. Quick checks core HTTPS/TLS and selected high-value headers without DNS. Standard runs the full existing DNS, TLS, and header checks. Advanced adds negotiated TLS protocol/cipher review and CSP directive review. The selected profile is persisted in scan history and report metadata. Responses include checks passed, findings to review, high/critical findings, TLS verification state, and scan duration. Findings in the dashboard are grouped into Pass/Warn/Fail statuses and include evidence and recommended fixes.
+Finding workflow updates accept `{"status":"open|acknowledged|fixed","note":"optional, up to 500 characters"}`. `open` removes the saved workflow state. History, comparison, report and workflow routes require the authenticated scan owner. Comparisons reject different hostnames, ports, or paths. Standards links are partial guidance and do not establish full OWASP ASVS compliance.
+
+Choose `profile` as `quick`, `standard`, or `advanced` in `POST /api/scans`. Quick checks core HTTPS/TLS and selected high-value headers without DNS. Standard runs the full existing DNS, TLS, and header checks. Advanced adds negotiated TLS protocol/cipher and CSP directive review plus passive HTTP technology/service fingerprints, heuristic WAF header indicators, and curated evidence-only web configuration templates. Those in-process checks are inspired by testssl.sh, WhatWeb, Nmap, wafw00f, Nikto, and Nuclei detection approaches; they do not invoke those programs, make extra requests, crawl, probe ports, or send test payloads. The selected profile is persisted in scan history and report metadata. Responses include checks passed, findings to review, high/critical findings, TLS verification state, and scan duration. Findings in the dashboard are grouped into Pass/Warn/Fail statuses and include evidence and recommended fixes.
 
 Example request:
 
@@ -61,6 +69,16 @@ Example request:
 ```
 
 Send `Authorization: Bearer <SITESENTRY_API_TOKEN>` for every API endpoint, including health.
+
+### Bounded CI scan
+
+An authorized CI job can run the same passive checks and use deterministic exit codes. The `--authorized` flag is mandatory; `SITESENTRY_ALLOWED_DOMAINS` remains enforced when configured. JSON is written to stdout and optionally to a file. The command does not enable external tools or active exploitation.
+
+```powershell
+python -m integrations.ci_check --url https://example.com --profile standard --authorized --fail-on high --min-risk 0 --output sitesentry-report.json
+```
+
+Exit codes: `0` checks completed below the configured threshold, `1` threshold met, `2` scan did not complete. Use `--fail-on none --min-risk 60` to make the score threshold the gate. Risk score and severity remain separate.
 
 ## ML training data required
 
@@ -79,6 +97,8 @@ python -m ml.train data/labeled_scans.csv --output models/config_review.joblib
 
 The scanner automatically returns `not_configured` until that model exists. Once trained, the configuration-review model is checksum-manifested and produces SHAP explanations during scans. DL is a research comparison in `ml/deep_learning.py`, not used by scans.
 
+Configuration-review ML calibration and drift tracking remain contingent on real, reviewed configuration observations. The supplied MSWD malicious-site data is a different target and must not be used to claim configuration-review quality.
+
 ### Supplied MSWD malicious-site data
 
 The supplied `ml/dataset_final.csv` and ZIP are the same 5,013-record MSWD dataset. `python -m ml.train_mswd` trains Logistic Regression, Random Forest, and MLP classifiers; outputs go to `models/mswd-final/`. Each `.joblib` bundle has a matching `.joblib.manifest.json` checksum/runtime record and the directory has a `requirements-deploy.txt` lockfile. The training report records the dataset hash, excluded unlabeled rows, hostname-group holdout, metrics, and limitations. The authenticated `/api/models` endpoint lists checksum-verified artifacts; `/api/models/<model-id>/predict` accepts the model's feature JSON and returns the prediction plus SHAP contributions. The dashboard's Advisory model workbench exposes the schema and this prediction flow. The dataset page describes benign and malicious URLs and lists CC BY 4.0, but does not document the numeric mapping; the pipeline assumes 0=benign and 1=malicious based on the class distributions and threat-indicator alignment. Confirm that mapping with the dataset authors before making product claims. Safe Browsing and VirusTotal features, hashes, IPs, and raw domain strings are excluded from model predictors. This is a separate advisory website-classification task; its result never changes rule findings.
@@ -89,7 +109,7 @@ Set `AI_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`, or `AI_PROVID
 
 ## Tools and supported scope
 
-The baseline uses Python `ssl`, HTTP, and DNS libraries only. `ssl` is the TLS implementation; standalone OpenSSL and the checklist's other external tools (testssl.sh/WhatWeb/wafw00f/Nmap/Nikto/Nuclei/SSlyze/ZAP) are not automatically invoked. Active or third-party command integrations need a deployment-specific allowlist, isolated least-privilege workers, reviewed parsers, and explicit authorized scope. Nmap/Nikto/Nuclei/ZAP are intentionally not exposed through arbitrary client arguments.
+The baseline uses Python `ssl`, HTTP, and DNS libraries only. `ssl` is the TLS implementation; the advanced profile also applies bounded in-process heuristics inspired by common scanner methods. Standalone OpenSSL and external programs (testssl.sh/WhatWeb/wafw00f/Nmap/Nikto/Nuclei/SSlyze/ZAP) are not automatically invoked. Active or third-party command integrations need a deployment-specific allowlist, isolated least-privilege workers, reviewed parsers, and explicit authorized scope. Nmap/Nikto/Nuclei/ZAP are intentionally not exposed through arbitrary client arguments.
 
 The scanner is passive and is not proof that a target is secure. It does not crawl pages, authenticate, test application behavior, or establish exploitability. Header absence is configuration evidence only. Do not deploy the in-process worker queue as a multi-tenant hosted service without external worker isolation, persistent queueing, shared rate controls, monitoring, and network egress controls.
 

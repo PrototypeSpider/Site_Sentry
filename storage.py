@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class ScanStore:
@@ -41,6 +41,11 @@ class ScanStore:
                 conn.execute("ALTER TABLE scans ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
                 conn.execute("CREATE INDEX scans_owner_created_idx ON scans(owner_id,created_at)")
                 conn.execute("PRAGMA user_version=4")
+                version = 4
+            if version < 5:
+                conn.execute("CREATE TABLE finding_workflow(scan_id TEXT NOT NULL,check_id TEXT NOT NULL,owner_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('acknowledged','fixed')),note TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(scan_id,check_id),FOREIGN KEY(scan_id) REFERENCES scans(scan_id) ON DELETE CASCADE)")
+                conn.execute("CREATE INDEX finding_workflow_owner_idx ON finding_workflow(owner_id,updated_at)")
+                conn.execute("PRAGMA user_version=5")
 
     def count_created_since(self, since: str) -> int:
         with self.connect() as conn:
@@ -78,6 +83,25 @@ class ScanStore:
             else:
                 rows=conn.execute("SELECT scan_id,target,status,created_at,finished_at,error,profile FROM scans WHERE owner_id=? ORDER BY created_at DESC LIMIT ?",(owner_id,limit)).fetchall()
         return [dict(row) for row in rows]
+
+    def get_workflows(self, scan_id: str, owner_id: str) -> dict[str, dict]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT check_id,status,note,updated_at FROM finding_workflow WHERE scan_id=? AND owner_id=?", (scan_id, owner_id)).fetchall()
+        return {row["check_id"]: dict(row) for row in rows}
+
+    def set_workflow(self, scan_id: str, check_id: str, owner_id: str, status: str, note: str, updated_at: str):
+        with self.connect() as conn:
+            conn.execute("INSERT INTO finding_workflow(scan_id,check_id,owner_id,status,note,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(scan_id,check_id) DO UPDATE SET status=excluded.status,note=excluded.note,updated_at=excluded.updated_at WHERE finding_workflow.owner_id=excluded.owner_id",
+                (scan_id, check_id, owner_id, status, note, updated_at))
+            saved = conn.execute("SELECT owner_id FROM finding_workflow WHERE scan_id=? AND check_id=?", (scan_id, check_id)).fetchone()
+            if not saved or saved["owner_id"] != owner_id:
+                raise PermissionError("Finding workflow belongs to another identity.")
+            self.audit(scan_id, "finding_workflow", updated_at, status, conn)
+
+    def delete_workflow(self, scan_id: str, check_id: str, owner_id: str, updated_at: str):
+        with self.connect() as conn:
+            conn.execute("DELETE FROM finding_workflow WHERE scan_id=? AND check_id=? AND owner_id=?", (scan_id, check_id, owner_id))
+            self.audit(scan_id, "finding_workflow", updated_at, "reopened", conn)
 
     @staticmethod
     def audit(scan_id,action,timestamp,outcome,conn):

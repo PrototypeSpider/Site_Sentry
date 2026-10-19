@@ -16,7 +16,7 @@ from scanner.url_validation import TargetValidationError, validate_target
 from app import create_app
 
 
-@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com", "http://localhost", "http://127.0.0.1", "http://169.254.1.2", "https://example.com:8443", "https://user:pass@example.com"])
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com", "http://localhost", "http://127.0.0.1", "http://169.254.1.2", "https://example.com:8443", "https://user:pass@example.com", "https://example.com/path?access_token=secret"])
 def test_rejects_invalid_or_private_targets(url):
     with pytest.raises(TargetValidationError):
         validate_target(url)
@@ -34,6 +34,46 @@ def test_header_rules_require_directive_quality():
     assert results["header.hsts"].status == "warning"
     assert results["header.x_content_type_options"].status == "finding"
     assert results["header.clickjacking_protection"].status == "finding"
+
+
+def test_hsts_csp_and_cookie_configuration_quality_are_evidence_backed():
+    from scanner.checks import evaluate_advanced_observation
+    obs=HttpObservation("https://site.test/", "https://site.test/", 200,
+        {"Strict-Transport-Security":"max-age=31536000", "Content-Security-Policy":"default-src *; script-src 'self' 'unsafe-inline'",
+         "Set-Cookie":"session=topsecret; Path=/; Expires=Wed, 21 Oct 2030 07:28:00 GMT"},
+        {"verified":True,"not_after":format_datetime(datetime.now(timezone.utc)+timedelta(days=365))}, [], 5)
+    findings={item.check_id:item for item in evaluate_observation(obs)}
+    findings.update({item.check_id:item for item in evaluate_advanced_observation(obs)})
+    assert "includeSubDomains is absent" in findings["header.hsts"].evidence
+    assert findings["header.csp"].status=="warning"
+    assert findings["header.cookie_security"].status=="warning"
+    assert "topsecret" not in findings["header.cookie_security"].evidence
+    assert "session" not in findings["header.cookie_security"].evidence
+
+
+def test_risk_score_keeps_severity_and_confidence_separate_and_deduplicates_families():
+    from scanner.risk import aggregate_risk, annotate_findings
+    rows=annotate_findings([
+        {"check_id":"header.hsts","status":"finding","severity":"medium","evidence":"max-age=100"},
+        {"check_id":"header.csp","status":"warning","severity":"medium","evidence":"unsafe-inline"},
+        {"check_id":"tls.protocol_version","status":"pass","severity":"informational","evidence":"TLSv1.3"},
+    ])
+    assert rows[0]["risk"]["score"] > 0
+    assert rows[0]["risk"]["confidence"] == .95
+    assert rows[0]["severity"] == "medium"
+    assert aggregate_risk(rows)["score"] == max(row["risk"]["score"] for row in rows)
+    assert rows[0]["standards"][0]["framework"] == "OWASP ASVS"
+
+
+def test_ci_thresholds_fail_only_for_unresolved_configured_findings():
+    from integrations.ci_check import failure_reason
+    report={"scan_status":"completed","findings":[
+        {"status":"pass","severity":"high","risk":{"score":0}},
+        {"status":"finding","severity":"medium","risk":{"score":48}}]}
+    assert failure_reason(report,fail_on="high",min_risk=0) is None
+    assert failure_reason(report,fail_on="medium",min_risk=0)=="configured_threshold_exceeded"
+    assert failure_reason(report,fail_on="none",min_risk=48)=="configured_threshold_exceeded"
+    assert failure_reason({"scan_status":"error"},fail_on="none",min_risk=0)=="scan_incomplete"
 
 
 def test_flask_api_validates_and_returns_health(tmp_path, monkeypatch):
@@ -114,13 +154,14 @@ def test_http_to_https_redirect_assessment(monkeypatch):
     import scanner.engine as engine
     from scanner.url_validation import ValidatedTarget
     from scanner.transport import HttpObservation
-    monkeypatch.setattr(engine, "validate_target", lambda *args, **kwargs: ValidatedTarget("http://example.com/", "example.com", 80, ("93.184.216.34",)))
+    monkeypatch.setattr(engine, "validate_target", lambda *args, **kwargs: ValidatedTarget("http://example.com/?access_token=secret-value", "example.com", 80, ("93.184.216.34",)))
     monkeypatch.setattr(engine, "observe_dns", lambda hostname: {"records": {}, "errors": {}})
-    monkeypatch.setattr(engine.SafeTransport, "observe", lambda self, target: HttpObservation("http://example.com/", "https://example.com/", 200, {}, {"verified":True,"not_after":format_datetime(datetime.now(timezone.utc)+timedelta(days=365))}, ["https://example.com/"], 12))
-    result = engine.Scanner().scan("http://example.com/")
+    monkeypatch.setattr(engine.SafeTransport, "observe", lambda self, target: HttpObservation("http://example.com/?access_token=secret-value", "https://example.com/?api_key=secret-value", 200, {}, {"verified":True,"not_after":format_datetime(datetime.now(timezone.utc)+timedelta(days=365))}, ["https://example.com/?api_key=secret-value"], 12))
+    result = engine.Scanner().scan("http://example.com/?access_token=secret-value")
     redirect = next(item for item in result.findings if item.check_id == "http.https_redirect")
     assert redirect.status == "pass"
     assert redirect.ml_assessment["status"] == "not_configured"
+    assert "secret-value" not in str(result.to_dict())
 
 
 def test_health_requires_bearer_token_when_configured(tmp_path):
@@ -162,6 +203,54 @@ def test_scan_store_migrates_owner_column_and_filters_history(tmp_path):
     assert store.get_scan("alice-scan","bob") is None
     assert [scan["scan_id"] for scan in store.list_scans(owner_id="alice")]==["alice-scan"]
     assert store.list_scans(owner_id="bob")==[]
+
+
+def test_remediation_workflow_is_owner_scoped_and_requires_real_finding(tmp_path):
+    settings=Settings(database_path=str(tmp_path/"workflow.db"),report_dir=str(tmp_path/"workflow-reports"),
+        allowed_domains=frozenset({"example.com"}),auth_mode="proxy_identity")
+    client=create_app(settings).test_client()
+    alice={"X-Authenticated-User":"alice","X-Forwarded-Proto":"https"}
+    bob={"X-Authenticated-User":"bob","X-Forwarded-Proto":"https"}
+    store=client.application.extensions["sitesentry_store"]
+    result={"scan_status":"completed","findings":[{"check_id":"header.hsts","check":"HSTS","status":"finding","severity":"medium","evidence":"max-age=100"}]}
+    store.create_scan("workflow-scan","https://example.com/","2026-10-19T00:00:00+00:00",owner_id="alice")
+    store.update_status("workflow-scan","completed",result=result,finished_at="2026-10-19T00:01:00+00:00")
+    url="/api/scans/workflow-scan/findings/header.hsts/workflow"
+    response=client.put(url,headers=alice,json={"status":"fixed","note":"Updated proxy configuration"})
+    assert response.status_code==200
+    assert client.get("/api/scans/workflow-scan/workflow",headers=alice).json["workflow"]["header.hsts"]["status"]=="fixed"
+    assert client.get("/api/scans/workflow-scan/workflow",headers=bob).status_code==404
+    assert client.put(url,headers=bob,json={"status":"acknowledged"}).status_code==404
+    assert client.put("/api/scans/workflow-scan/findings/not-a-check/workflow",headers=alice,json={"status":"fixed"}).status_code==404
+    assert client.put(url,headers=alice,json={"status":"fixed","note":"x"*501}).status_code==400
+    assert client.put(url,headers=alice,json={"status":"open"}).status_code==200
+    assert client.get("/api/scans/workflow-scan/workflow",headers=alice).json["workflow"]=={}
+
+
+def test_historical_comparison_reports_resolved_and_blocks_other_owner_or_target(tmp_path):
+    settings=Settings(database_path=str(tmp_path/"compare.db"),report_dir=str(tmp_path/"compare-reports"),
+        allowed_domains=frozenset({"example.com","other.test"}),auth_mode="proxy_identity")
+    client=create_app(settings).test_client()
+    alice={"X-Authenticated-User":"alice","X-Forwarded-Proto":"https"}
+    bob={"X-Authenticated-User":"bob","X-Forwarded-Proto":"https"}
+    store=client.application.extensions["sitesentry_store"]
+    base={"scan_status":"completed","scanner_version":"1","findings":[
+        {"check_id":"header.hsts","check":"HSTS","status":"finding","severity":"medium","evidence":"missing"},
+        {"check_id":"header.csp","check":"CSP","status":"pass","severity":"informational","evidence":"present"}]}
+    current={"scan_status":"completed","scanner_version":"1","findings":[
+        {"check_id":"header.hsts","check":"HSTS","status":"pass","severity":"informational","evidence":"max-age=31536000"},
+        {"check_id":"header.csp","check":"CSP","status":"warning","severity":"medium","evidence":"unsafe-inline"}]}
+    store.create_scan("before","https://example.com/app","2026-10-18T00:00:00+00:00",owner_id="alice")
+    store.update_status("before","completed",result=base,finished_at="2026-10-18T00:01:00+00:00")
+    store.create_scan("after","https://example.com/app/","2026-10-19T00:00:00+00:00",owner_id="alice")
+    store.update_status("after","completed",result=current,finished_at="2026-10-19T00:01:00+00:00")
+    store.create_scan("elsewhere","https://other.test/app","2026-10-19T00:00:00+00:00",owner_id="alice")
+    store.update_status("elsewhere","completed",result=current,finished_at="2026-10-19T00:01:00+00:00")
+    compared=client.get("/api/scans/after/compare/before",headers=alice)
+    assert compared.status_code==200
+    assert {item["check_id"]:item["change"] for item in compared.json["changes"]}=={"header.csp":"new","header.hsts":"resolved"}
+    assert client.get("/api/scans/after/compare/before",headers=bob).status_code==404
+    assert client.get("/api/scans/after/compare/elsewhere",headers=alice).status_code==400
 
 
 def test_multinstance_settings_require_redis(monkeypatch,tmp_path):

@@ -18,7 +18,7 @@ Legend: **Done** = implemented and covered or inspected; **Partial** = useful im
 
 ## B. Scope and safety
 
-- [x] Domain allowlist and authorization reference in scoped mode; reference is auditable metadata, not independent proof of consent.
+- [x] Optional backend domain allowlist; the API accepts only URL/profile fields, not client-asserted authorization references. Deployment credentials and target scope remain server-controlled.
 - [x] URL scheme, hostname, credentials, and standard-port validation.
 - [x] Reject non-public IP destinations.
 - [x] Pin sockets to validated IPs while preserving TLS SNI and host verification.

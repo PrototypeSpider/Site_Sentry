@@ -7,12 +7,13 @@ from datetime import datetime, timezone
 from .checks import evaluate_advanced_observation, evaluate_observation
 from .dns_checks import observe_dns
 from .models import Finding, ScanResult
+from .passive_fingerprints import evaluate_passive_fingerprints
 from ml.features import extract_features
 from ml.predict import assess
 from xai.feature_attribution import explain_linear
 from integrations.explainer import get_provider, sanitize_evidence
 from .transport import SafeTransport, SafeTransportError
-from .url_validation import TargetValidationError, validate_target
+from .url_validation import TargetValidationError, report_safe_url, validate_target
 
 
 class Scanner:
@@ -37,6 +38,7 @@ class Scanner:
                 findings = [finding for finding in findings if finding.check_id in quick_checks]
             elif profile == "advanced":
                 findings.extend(evaluate_advanced_observation(observation))
+                findings.extend(evaluate_passive_fingerprints(observation))
             feature_record = {"https": observation.final_url.lower().startswith("https://"), "tls_verified": (observation.tls or {}).get("verified") is True,
                 "tls_days_remaining": _tls_days_remaining((observation.tls or {}).get("not_after")), "headers": observation.headers}
             ml_result = assess(feature_record, "models/config_review.joblib")
@@ -65,7 +67,7 @@ class Scanner:
                 status = "pass" if initial_scheme == "http" and final_scheme == "https" else ("finding" if initial_scheme == "http" else "not_assessed")
                 findings.append(Finding("http.https_redirect", "HTTP-to-HTTPS redirect", status,
                     "informational" if status in {"pass", "not_assessed"} else "medium",
-                    f"Initial scheme={initial_scheme}; final scheme={final_scheme}; chain={observation.redirect_chain}.",
+                    f"Initial scheme={initial_scheme}; final scheme={final_scheme}; chain={[report_safe_url(item) for item in observation.redirect_chain]}.",
                     "HTTP-to-HTTPS redirects help move cleartext requests to HTTPS. This check assesses only the observed URL path.",
                     "Redirect HTTP requests to HTTPS and retain HSTS for future browser visits." if status == "finding" else "Confirm every HTTP entry point redirects to HTTPS."))
                 redirect_finding = findings[-1]
@@ -75,7 +77,7 @@ class Scanner:
                 redirect_finding.ai_explanation = {"status": "not_configured", "provider": None, "content": None}
                 ai_explanations[redirect_finding.check_id] = redirect_finding.ai_explanation
                 findings.append(Finding("http.redirect_chain", "Redirect handling", "pass", "informational",
-                    f"Safely followed {len(observation.redirect_chain)} redirect(s); final URL: {observation.final_url}.",
+                    f"Safely followed {len(observation.redirect_chain)} redirect(s); final URL: {report_safe_url(observation.final_url)}.",
                     "Each redirect target was revalidated against public-address and domain-scope policy.",
                     "Keep redirects within the authorized target scope."))
                 redirect_finding = findings[-1]
@@ -86,11 +88,12 @@ class Scanner:
                 ai_explanations[redirect_finding.check_id] = redirect_finding.ai_explanation
             modules = ["http_headers", "tls"]
             if profile != "quick": modules.insert(0, "dns")
-            if profile == "advanced": modules.append("tls_advanced_rules")
-            return ScanResult(target=observation.final_url, scan_status="completed", findings=findings,
+            if profile == "advanced": modules.extend(["tls_advanced_rules", "passive_security_fingerprints"])
+            return ScanResult(target=report_safe_url(observation.final_url), scan_status="completed", findings=findings,
                 started_at=started, completed_at=datetime.now(timezone.utc).isoformat(), modules_executed=modules,
                 metadata={"dns": dns, "http": {"status_code": observation.status_code, "content_type": observation.headers.get("content-type"),
-                    "redirect_chain": observation.redirect_chain, "body_bytes_read": observation.body_bytes_read, "body_truncated": observation.body_truncated},
+                    "redirect_chain": [report_safe_url(item) for item in observation.redirect_chain],
+                    "final_url": report_safe_url(observation.final_url), "body_bytes_read": observation.body_bytes_read, "body_truncated": observation.body_truncated},
                     "tls": observation.tls, "ai_explanations": ai_explanations, "scan_profile": profile},
                 limitations=["Passive single-response assessment only; no crawling, exploit testing, port scanning, or vulnerability proof.",
                              "Connections are pinned to validated public IP addresses; DNS is checked again before every redirect connection.",
@@ -100,7 +103,7 @@ class Scanner:
             findings.append(Finding("scan.request", "Safe scan request", "error", "informational", str(exc),
                                     "The requested scan did not complete under the configured target or transport policy.",
                                     "Correct the URL or assess a public target within the authorized scope."))
-            return ScanResult(target=url if isinstance(url, str) else "", scan_status="error", findings=findings,
+            return ScanResult(target=report_safe_url(url) if isinstance(url, str) else "", scan_status="error", findings=findings,
                 started_at=started, completed_at=datetime.now(timezone.utc).isoformat(), errors=errors,
                 limitations=["No target checks are counted as passed when target validation or collection fails."])
         except SafeTransportError as exc:
@@ -108,7 +111,7 @@ class Scanner:
             findings.append(Finding(f"collection.{exc.code}", "Network collection", "error", "informational", str(exc),
                 "The scan failed during a specific collection stage; uncollected checks are not reported as passed.",
                 "Resolve the reported DNS, TLS, connection, read, redirect, or HTTP collection condition and retry if authorized.", source=exc.code))
-            return ScanResult(target=url if isinstance(url, str) else "", scan_status="error", findings=findings,
+            return ScanResult(target=report_safe_url(url) if isinstance(url, str) else "", scan_status="error", findings=findings,
                 started_at=started, completed_at=datetime.now(timezone.utc).isoformat(), errors=errors,
                 modules_executed=["dns"] if "dns" in locals() else [], metadata={"collection_error_code": exc.code},
                 limitations=["No target checks are counted as passed when collection fails."])

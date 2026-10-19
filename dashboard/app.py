@@ -14,7 +14,8 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from scanner import (BackendError, api_token, cancel_scan, create_scan,
-                     get_pdf_report, get_report, get_scan, get_xai_report, health, list_scans, normalize_url)
+                     compare_scans, get_pdf_report, get_report, get_scan, get_workflow,
+                     get_xai_report, health, list_scans, normalize_url, update_workflow)
 
 st.set_page_config(page_title="SiteSentry", page_icon="🛡️", layout="wide")
 st.markdown("""
@@ -105,7 +106,7 @@ with st.form("scan_form", clear_on_submit=False):
 if submitted:
     target_url = normalize_url(url_text)
     if target_url is None:
-        st.error("Enter a valid HTTP or HTTPS URL on a standard port.")
+        st.error("Enter an HTTP(S) URL on a standard port without query parameters or embedded credentials.")
     else:
         try:
             accepted = create_scan(target_url, selected_profile)
@@ -136,6 +137,24 @@ def _display_status(value: str) -> str:
 
 def _display_severity(value: str) -> str:
     return "Info" if value in {"informational", "info", None, ""} else str(value).title()
+
+
+def _fix_example(check_id: str) -> str:
+    examples = {
+        "header.hsts": 'Strict-Transport-Security: max-age=31536000; includeSubDomains',
+        "header.csp": "Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        "header.csp_directives": "Remove unsafe-inline/unsafe-eval where possible; use per-response nonces or hashes.",
+        "header.x_content_type_options": "X-Content-Type-Options: nosniff",
+        "header.referrer_policy": "Referrer-Policy: strict-origin-when-cross-origin",
+        "header.permissions_policy": "Permissions-Policy: camera=(), microphone=(), geolocation=()",
+        "header.clickjacking_protection": "Content-Security-Policy: frame-ancestors 'none'",
+        "header.cookie_security": "Set-Cookie: session=<redacted>; Secure; HttpOnly; SameSite=Lax",
+        "http.https_redirect": "Redirect all HTTP requests to HTTPS; preserve the requested path and avoid cross-scope destinations.",
+        "tls.certificate_expiry": "Renew the certificate and verify automated renewal before the current notAfter date.",
+        "tls.protocol_version": "Configure the server to negotiate TLS 1.2 or TLS 1.3 only.",
+        "tls.cipher_strength": "Prefer modern AEAD cipher suites and verify the complete server configuration.",
+    }
+    return examples.get(check_id, "Apply the recommended change in the relevant web-server or application configuration, then rescan the same target.")
 
 
 def _sankey(findings: list[dict]):
@@ -222,7 +241,7 @@ if selected_id:
                 elif report.get("scan_status") == "partial":
                     st.warning("Scan completed partially. Uncollected checks are not counted as passes.")
 
-                metric_cols = st.columns(5)
+                metric_cols = st.columns(6)
                 metric_cols[0].metric("Checks passed", metrics.get("checks_passed", sum(item.get("status") == "pass" for item in findings)))
                 metric_cols[1].metric("Findings to review", metrics.get("findings_to_review", 0))
                 metric_cols[2].metric("High / critical", metrics.get("high_critical_findings", 0))
@@ -230,6 +249,35 @@ if selected_id:
                 metric_cols[3].metric("TLS verification", "Verified" if tls_verified is True else "Not verified" if tls_verified is False else "Not assessed")
                 duration = metrics.get("scan_duration_seconds")
                 metric_cols[4].metric("Scan duration", f"{duration:.1f} s" if isinstance(duration, (int, float)) else "—")
+                risk_summary = report.get("risk_summary") or {"score": 0}
+                metric_cols[5].metric("Prioritization score", f"{risk_summary.get('score', 0)}/100", help="Advisory evidence-weighted prioritization; not a severity or exploitability rating.")
+
+                completed_history = [row for row in history if row.get("scan_id") != selected_id and row.get("status") in {"completed", "partial"}]
+                if completed_history:
+                    with st.expander("Compare with an earlier scan"):
+                        baseline_by_id = {row["scan_id"]: row for row in completed_history}
+                        baseline_id = st.selectbox("Baseline scan", list(baseline_by_id),
+                            format_func=lambda value: f"{baseline_by_id[value].get('created_at','')[:16].replace('T',' ')} · {baseline_by_id[value].get('target','')}",
+                            key=f"baseline-{selected_id}")
+                        if st.button("Compare evidence", key=f"compare-{selected_id}"):
+                            try:
+                                comparison = compare_scans(selected_id, baseline_id)
+                                st.session_state[f"comparison-{selected_id}"] = comparison
+                            except BackendError as exc:
+                                st.error(str(exc))
+                        comparison = st.session_state.get(f"comparison-{selected_id}")
+                        if comparison:
+                            if comparison.get("profile_changed") or comparison.get("scanner_version_changed"):
+                                st.warning("Scan profile or scanner version changed. Interpret differences with that coverage change in mind.")
+                            changes = comparison.get("changes", [])
+                            counts = {name: sum(row.get("change") == name for row in changes) for name in ("new", "resolved", "recurring", "changed", "unchanged")}
+                            st.caption(" · ".join(f"{name.title()}: {count}" for name, count in counts.items()))
+                            st.dataframe(pd.DataFrame([{"Check": row.get("check"), "Change": row.get("change", "").title(),
+                                "Before": row.get("before_status") or "Not assessed", "Now": row.get("after_status") or "Not assessed",
+                                "Risk before": (row.get("risk_before") or {}).get("score", 0), "Risk now": (row.get("risk_after") or {}).get("score", 0),
+                                "Previous evidence": row.get("before_evidence") or "—", "Current evidence": row.get("after_evidence") or "—"} for row in changes]),
+                                hide_index=True, width="stretch")
+                            st.caption("A finding is marked resolved only when its current scan status is Pass. Comparison requires matching hostname, port, and path.")
 
                 st.subheader("Security findings")
                 filter_cols = st.columns([2, 2, 2])
@@ -238,6 +286,7 @@ if selected_id:
                 severity_options = ["Critical", "High", "Medium", "Low", "Info"]
                 selected_severities = filter_cols[1].multiselect("Severity", severity_options, default=severity_options)
                 filter_cols[2].caption(f"{len(findings)} checks in this profile")
+                workflows = get_workflow(selected_id)
                 rows = []
                 for item in findings:
                     status = _display_status(item.get("status"))
@@ -248,11 +297,53 @@ if selected_id:
                         "Check": item.get("check", item.get("check_id", "Check")),
                         "Severity": severity,
                         "Status": status,
+                        "Risk score": (item.get("risk") or {}).get("score", 0),
+                        "Confidence": f"{(item.get('risk') or {}).get('confidence', 0):.0%}",
+                        "Remediation state": workflows.get(item.get("check_id"), {}).get("status", "open").title(),
                         "Evidence": item.get("evidence", ""),
                         "Recommended fix": item.get("recommendation", ""),
                     })
-                st.dataframe(pd.DataFrame(rows, columns=["Check", "Severity", "Status", "Evidence", "Recommended fix"]),
+                st.dataframe(pd.DataFrame(rows, columns=["Check", "Severity", "Status", "Risk score", "Confidence", "Remediation state", "Evidence", "Recommended fix"]),
                     hide_index=True, width="stretch")
+                with st.expander("Finding remediation and verification", expanded=False):
+                    for item in findings:
+                        check_id = item.get("check_id", "")
+                        state = workflows.get(check_id, {})
+                        with st.expander(f"{item.get('check', check_id)} · {state.get('status', 'open').title()}", expanded=False):
+                            st.write(item.get("explanation", ""))
+                            st.markdown("**Observed evidence**")
+                            st.code(item.get("evidence", ""), language="text")
+                            st.markdown("**Suggested remediation**")
+                            st.write(item.get("recommendation", ""))
+                            st.markdown("**Configuration example / next step**")
+                            st.code(_fix_example(check_id), language="text")
+                            if item.get("standards"):
+                                st.markdown("**Relevant guidance (partial mapping only)**")
+                                for mapping in item["standards"]:
+                                    st.markdown(f"[{mapping.get('framework')} {mapping.get('version')} · {mapping.get('control')}]({mapping.get('source_url')})")
+                                    st.caption(mapping.get("applicability", ""))
+                            if state.get("status") == "fixed":
+                                st.info("Marked fixed by the operator. It is not considered resolved until a later same-target scan passes this check.")
+                            with st.form(f"workflow-{selected_id}-{check_id}"):
+                                workflow_state = st.selectbox("Operator status", ["open", "acknowledged", "fixed"],
+                                    index=["open", "acknowledged", "fixed"].index(state.get("status", "open")), key=f"workflow-state-{selected_id}-{check_id}")
+                                workflow_note = st.text_input("Change note (optional, max 500 characters)", value=state.get("note", ""), max_chars=500,
+                                    key=f"workflow-note-{selected_id}-{check_id}")
+                                saved = st.form_submit_button("Save status")
+                            if saved:
+                                try:
+                                    update_workflow(selected_id, check_id, workflow_state, workflow_note)
+                                    st.rerun()
+                                except BackendError as exc:
+                                    st.error(str(exc))
+                with st.expander("Risk scoring and standards mapping"):
+                    st.write("Risk scores prioritize findings using the recorded severity, evidence confidence and exposure factor. Scores are advisory, separate from severity, and related observations are de-duplicated by check family in the overall score.")
+                    for item in findings:
+                        risk = item.get("risk") or {}
+                        if risk.get("score", 0):
+                            st.write(f"**{item.get('check')} — {risk.get('score')}/100** · {risk.get('rationale')}")
+                        for mapping in item.get("standards", []):
+                            st.caption(f"{item.get('check')}: {mapping.get('framework')} {mapping.get('version')} / {mapping.get('control')} — {mapping.get('applicability')}")
                 with st.expander("Finding flow by status, severity, and check"):
                     _sankey(findings)
 

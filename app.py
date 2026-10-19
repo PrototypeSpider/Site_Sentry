@@ -14,15 +14,17 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 from io import BytesIO
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from werkzeug.exceptions import HTTPException
 
 from config import Settings
 from reports.json_report import write_report
 from scanner import Scanner
-from scanner.url_validation import TargetValidationError, validate_target
+from scanner.url_validation import TargetValidationError, report_safe_url, validate_target
 from storage import ScanStore
 from rate_limit import LocalLimiter, RedisLimiter
 
@@ -109,6 +111,8 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.errorhandler(Exception)
     def unexpected(exc):
+        if isinstance(exc, HTTPException):
+            return jsonify({"error": exc.name.lower().replace(" ", "_")}), exc.code
         logger.exception("API request failed")
         return jsonify({"error":"internal_error"}),500
 
@@ -212,7 +216,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             if (work_queue.llen(work_queue_key)>=settings.max_pending_scans if work_queue_key else work_queue.full()): return jsonify({"error":"scan_queue_full"}),429
             allowed,reason=limiter.allow(client,per_minute=settings.per_minute_limit,per_day=settings.daily_quota_per_client,global_per_day=settings.daily_scan_quota)
             if not allowed: return jsonify({"error":reason}),429
-            store.create_scan(scan_id,target.url,created,profile,client)
+            store.create_scan(scan_id,report_safe_url(target.url),created,profile,client)
             if work_queue_key:
                 work_queue.rpush(work_queue_key,json.dumps([scan_id,target.url,profile]))
             else:
@@ -235,7 +239,72 @@ def create_app(settings: Settings | None = None) -> Flask:
     def findings(scan_id):
         scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
-        return jsonify({"scan_id":scan_id,"findings":scan["result"].get("findings",[]) if scan["result"] else []})
+        return jsonify({"scan_id":scan_id,"findings":_enrich_saved_result(scan["result"]).get("findings",[]) if scan["result"] else []})
+
+    @app.get("/api/scans/<scan_id>/workflow")
+    def get_finding_workflow(scan_id):
+        scan=store.get_scan(scan_id,identity())
+        if not scan: return jsonify({"error":"not_found"}),404
+        return jsonify({"scan_id":scan_id,"workflow":store.get_workflows(scan_id,identity())})
+
+    @app.put("/api/scans/<scan_id>/findings/<path:check_id>/workflow")
+    def update_finding_workflow(scan_id,check_id):
+        scan=store.get_scan(scan_id,identity())
+        if not scan: return jsonify({"error":"not_found"}),404
+        if not scan["result"]: return jsonify({"error":"scan_not_complete"}),409
+        finding=next((item for item in scan["result"].get("findings",[]) if item.get("check_id")==check_id),None)
+        if not finding: return jsonify({"error":"finding_not_found"}),404
+        payload=request.get_json(silent=True)
+        if not isinstance(payload,dict) or set(payload)-{"status","note"} or payload.get("status") not in {"open","acknowledged","fixed"}:
+            return jsonify({"error":"invalid_workflow_status","allowed":["open","acknowledged","fixed"]}),400
+        note=payload.get("note","")
+        if not isinstance(note,str) or len(note)>500 or any(ord(char)<32 and char not in "\t\n\r" for char in note):
+            return jsonify({"error":"invalid_note"}),400
+        updated=datetime.now(timezone.utc).isoformat()
+        try:
+            if payload["status"] == "open":
+                store.delete_workflow(scan_id,check_id,identity(),updated)
+            else:
+                store.set_workflow(scan_id,check_id,identity(),payload["status"],note.strip(),updated)
+        except PermissionError:
+            return jsonify({"error":"not_found"}),404
+        return jsonify({"scan_id":scan_id,"check_id":check_id,"status":payload["status"],"note":note.strip(),"updated_at":updated}),200
+
+    @app.get("/api/scans/<scan_id>/compare/<baseline_id>")
+    def compare_scans(scan_id,baseline_id):
+        current=store.get_scan(scan_id,identity())
+        baseline=store.get_scan(baseline_id,identity())
+        if not current or not baseline: return jsonify({"error":"not_found"}),404
+        if not current["result"] or not baseline["result"]: return jsonify({"error":"scan_not_complete"}),409
+        if not _same_scan_target(current["target"],baseline["target"]):
+            return jsonify({"error":"target_mismatch","message":"Historical comparisons require the same hostname, port, and path."}),400
+        baseline_result=_enrich_saved_result(baseline["result"])
+        current_result=_enrich_saved_result(current["result"])
+        old={item.get("check_id"):item for item in baseline_result.get("findings",[])}
+        new={item.get("check_id"):item for item in current_result.get("findings",[])}
+        unresolved={"finding","warning","fail","error","inconclusive"}
+        changes=[]
+        for check_id in sorted(set(old)|set(new)):
+            before,after=old.get(check_id),new.get(check_id)
+            before_status=before.get("status") if before else None
+            after_status=after.get("status") if after else None
+            if before is None or before_status=="pass" and after_status in unresolved:
+                change="new"
+            elif before_status in unresolved and after_status=="pass":
+                change="resolved"
+            elif before_status in unresolved and after_status in unresolved:
+                change="recurring" if before_status==after_status and before.get("evidence")==after.get("evidence") else "changed"
+            elif before_status==after_status and (before or {}).get("evidence")== (after or {}).get("evidence"):
+                change="unchanged"
+            else:
+                change="changed"
+            changes.append({"check_id":check_id,"check":(after or before or {}).get("check"),"change":change,
+                "before_status":before_status,"after_status":after_status,"before_evidence":(before or {}).get("evidence"),
+                "after_evidence":(after or {}).get("evidence"),"risk_before":(before or {}).get("risk"),"risk_after":(after or {}).get("risk")})
+        return jsonify({"scan_id":scan_id,"baseline_scan_id":baseline_id,"target":current["target"],
+            "baseline_completed_at":baseline["finished_at"],"current_completed_at":current["finished_at"],
+            "scanner_version_changed":baseline_result.get("scanner_version")!=current_result.get("scanner_version"),
+            "profile_changed":baseline.get("profile")!=current.get("profile"),"changes":changes})
 
     @app.get("/api/scans/<scan_id>/explanations")
     def explanations(scan_id):
@@ -250,16 +319,17 @@ def create_app(settings: Settings | None = None) -> Flask:
         if not scan: return jsonify({"error":"not_found"}),404
         if not scan["result"]: return jsonify({"error":"report_not_ready"}),409
         from xai.report import generate_xai_report
-        return jsonify(generate_xai_report(scan["result"]))
+        return jsonify(generate_xai_report(_enrich_saved_result(scan["result"])))
 
     @app.get("/api/scans/<scan_id>/report")
     def report(scan_id):
         scan=store.get_scan(scan_id,identity())
         if not scan: return jsonify({"error":"not_found"}),404
         if not scan["result"]: return jsonify({"error":"report_not_ready"}),409
+        result=_enrich_saved_result(scan["result"])
         fmt=request.args.get("format","json").lower()
-        if fmt=="json": return Response(json.dumps(scan["result"],ensure_ascii=False,indent=2),mimetype="application/json",headers={"Content-Disposition":f"attachment; filename=sitesentry-{scan_id}.json"})
-        if fmt=="pdf": return Response(_pdf_report(scan["result"]),mimetype="application/pdf",headers={"Content-Disposition":f"attachment; filename=sitesentry-{scan_id}.pdf"})
+        if fmt=="json": return Response(json.dumps(result,ensure_ascii=False,indent=2),mimetype="application/json",headers={"Content-Disposition":f"attachment; filename=sitesentry-{scan_id}.json"})
+        if fmt=="pdf": return Response(_pdf_report(result),mimetype="application/pdf",headers={"Content-Disposition":f"attachment; filename=sitesentry-{scan_id}.pdf"})
         return jsonify({"error":"unsupported_format"}),400
 
     @app.post("/api/scans/<scan_id>/cancel")
@@ -272,7 +342,16 @@ def create_app(settings: Settings | None = None) -> Flask:
             # Queue ownership is serialized with the worker's dequeue transition by
             # scan_lock; queued rows are cancellable until that transition commits.
             if work_queue_key:
-                try: work_queue.lrem(work_queue_key,0,json.dumps([scan_id,scan["target"],scan.get("profile", "standard")]))
+                try:
+                    # Queue payloads carry the actual URL for the worker. Match
+                    # by scan ID without copying secret query values into history.
+                    for queued_payload in work_queue.lrange(work_queue_key,0,-1):
+                        try:
+                            if json.loads(queued_payload)[0] == scan_id:
+                                work_queue.lrem(work_queue_key,1,queued_payload)
+                                break
+                        except (ValueError, TypeError, IndexError):
+                            continue
                 except Exception:
                     logger.exception("Could not remove cancelled scan %s from shared queue",scan_id)
             with cancelled_lock: cancelled.add(scan_id)
@@ -294,9 +373,36 @@ def _pdf_report(result: dict) -> bytes:
     for text,bold in [("SiteSentry Security Assessment Report",True),(f"Target: {result.get('target','')}",False),(f"Scan ID: {result.get('scan_id','')}",False),(f"Status: {result.get('scan_status','')}",False),(f"Summary: {result.get('summary',{})}",False)]: line(text,bold)
     for finding in result.get("findings",[]):
         line(f"{finding.get('check_id')} | {finding.get('status')} | {finding.get('severity')}",True)
+        risk=finding.get("risk") or {}
+        if risk: line(f"Risk priority: {risk.get('score',0)}/100 | evidence confidence: {float(risk.get('confidence',0)):.0%}")
         line(f"Evidence: {finding.get('evidence','')}"); line(f"Recommendation: {finding.get('recommendation','')}"); line(f"Explanation: {finding.get('explanation','')}")
+        for mapping in finding.get("standards",[]): line(f"Guidance: {mapping.get('framework')} {mapping.get('version')} | {mapping.get('control')} | partial mapping only")
     for limitation in result.get("limitations",[]): line(f"Limitation: {limitation}")
     pdf.save(); return buffer.getvalue()
+
+
+def _enrich_saved_result(result: dict) -> dict:
+    from scanner.risk import aggregate_risk, annotate_findings
+    enriched=dict(result)
+    enriched["findings"]=annotate_findings(result.get("findings", []))
+    enriched["risk_summary"]=aggregate_risk(enriched["findings"])
+    return enriched
+
+
+def _same_scan_target(first: str, second: str) -> bool:
+    """Compare identical hostname/port/path, ignoring scheme and query values."""
+    try:
+        left, right = urlsplit(first), urlsplit(second)
+        if left.username or left.password or right.username or right.password:
+            return False
+        left_port = left.port or (443 if left.scheme == "https" else 80)
+        right_port = right.port or (443 if right.scheme == "https" else 80)
+        left_path = left.path.rstrip("/") or "/"
+        right_path = right.path.rstrip("/") or "/"
+        return bool(left.hostname and right.hostname and left.hostname.lower() == right.hostname.lower()
+            and left_port == right_port and left_path == right_path)
+    except ValueError:
+        return False
 
 
 if __name__ == "__main__":

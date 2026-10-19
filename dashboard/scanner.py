@@ -43,7 +43,7 @@ def normalize_url(value: str) -> str | None:
     candidate = value if "://" in value else f"https://{value}"
     try:
         parsed = urlsplit(candidate)
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query:
             return None
         # Accessing .port also detects malformed port syntax.
         port = parsed.port
@@ -124,6 +124,21 @@ def list_scans(limit: int = 50) -> list[dict[str, Any]]:
 def get_findings(scan_id: str) -> list[dict[str, Any]]:
     result = _request("GET", f"/api/scans/{scan_id}/findings")
     return result.get("findings", [])
+
+
+def get_workflow(scan_id: str) -> dict[str, dict[str, Any]]:
+    return _request("GET", f"/api/scans/{scan_id}/workflow").get("workflow", {})
+
+
+def update_workflow(scan_id: str, check_id: str, status: str, note: str = "") -> dict[str, Any]:
+    if status not in {"open", "acknowledged", "fixed"} or len(note) > 500:
+        raise BackendError("Finding status or note is invalid.")
+    from urllib.parse import quote
+    return _request("PUT", f"/api/scans/{scan_id}/findings/{quote(check_id, safe='')}/workflow", json={"status": status, "note": note})
+
+
+def compare_scans(scan_id: str, baseline_id: str) -> dict[str, Any]:
+    return _request("GET", f"/api/scans/{scan_id}/compare/{baseline_id}")
 
 
 def get_report(scan_id: str) -> dict[str, Any]:

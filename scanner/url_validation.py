@@ -35,6 +35,8 @@ def validate_target(url: str, *, allowed_domains: set[str] | None = None) -> Val
         raise TargetValidationError("A hostname is required.")
     if parsed.username is not None or parsed.password is not None:
         raise TargetValidationError("Credentials in URLs are not allowed.")
+    if parsed.query:
+        raise TargetValidationError("Query strings are not supported; scan the URL without parameters to avoid exposing secrets.")
     hostname = parsed.hostname.rstrip(".").lower()
     if not hostname or hostname == "localhost" or hostname.endswith((".localhost", ".local", ".internal")):
         raise TargetValidationError("Local and internal hostnames are prohibited.")
@@ -60,5 +62,22 @@ def validate_target(url: str, *, allowed_domains: set[str] | None = None) -> Val
         if not ip.is_global:
             raise TargetValidationError("Private, reserved, loopback, link-local and other non-public destinations are prohibited.")
     path = parsed.path or "/"
-    normalized = urlunsplit((scheme, parsed.netloc, path, parsed.query, ""))
+    normalized = urlunsplit((scheme, parsed.netloc, path, "", ""))
     return ValidatedTarget(normalized, hostname, effective_port, tuple(sorted(resolved)))
+
+
+def report_safe_url(url: str) -> str:
+    """Drop query/fragment values before URLs enter reports or scan history."""
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return "[redacted URL]"
+        host = parsed.hostname.lower()
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        default = 443 if parsed.scheme == "https" else 80
+        netloc = f"{host}:{port}" if port and port != default else host
+        return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", "", ""))
+    except ValueError:
+        return "[redacted URL]"
