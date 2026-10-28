@@ -32,6 +32,9 @@ SiteSentry is a passive configuration assessment. It does not prove exploitabili
 ```text
 Operator
   │
+  ├── Terminal CLI (sitesentry/cli.py) ──► scanner engine directly
+  │       └── local SQLite history + JSON report files
+  │
   ├── Streamlit dashboard (dashboard/app.py)
   │       └── authenticated HTTP requests (dashboard/scanner.py)
   │
@@ -59,6 +62,7 @@ Separate model workbench:
 | Path | Responsibility |
 | --- | --- |
 | `app.py`, `config.py`, `rate_limit.py` | Flask API, environment configuration, authentication, quotas, queue, and API routes |
+| `sitesentry/` | Typer/Rich terminal commands; calls the scanner directly and persists local CLI history |
 | `scanner/` | Safe collection, observations, findings, profile logic, rules, risk annotations, and passive fingerprints |
 | `dashboard/` | Streamlit UI and its server-side authenticated API client |
 | `storage.py`, `reports/` | SQLite persistence, scan history, workflow state, and report serialization |
@@ -114,6 +118,14 @@ The Flask API is authoritative for authentication, scope validation, scan submis
 The dashboard is a server-side client. It offers Quick/Standard/Advanced selection, URL submission, scan history, status polling, finding tables, metrics, Sankey visualization, and an XAI report button. Its health/activity panel refreshes every ten seconds and groups scan logs by profile. The API token is read by the Streamlit server and sent only to the backend.
 
 The dashboard translates raw statuses to display labels: `pass` becomes Pass; `fail`/`error` become Fail; other statuses appear as Warn. Read the raw finding status and evidence when exact technical meaning matters.
+
+### Terminal CLI
+
+The installable `sitesentry` command is a separate terminal interface to the same scanner engine. It runs directly in the local process, so it does not require Flask or Streamlit to be running. It exposes scan, saved report, history, config, doctor, and version commands. **Advanced is the CLI's only scan profile**; the API and dashboard keep their existing profile selection.
+
+Every CLI scan requires `--authorized` as an operator confirmation. The CLI still applies the URL policy, optional domain allowlist, public-address validation, pinned connections, redirect revalidation, response bounds, and network timeouts. It stores its own rows under the local CLI history identity in the configured SQLite DB; it does not show scans created by other API identities.
+
+The CLI supports readable Rich terminal output and JSON for scripts. Rich formatting is presentation only; it does not change scan semantics. `--fail-on` is optional and controls only the process exit code, not the recorded finding statuses.
 
 ## 5. Safe target and collection logic
 
@@ -265,6 +277,7 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m pip install -r dashboard\requirements.txt
+python -m pip install -e .
 Copy-Item .env.example .env
 ```
 
@@ -285,6 +298,19 @@ Terminal 2:
 .venv\Scripts\Activate.ps1
 python -m streamlit run dashboard\app.py
 ```
+
+Run the CLI from any terminal after the editable install:
+
+```powershell
+sitesentry --help
+sitesentry scan https://example.com --authorized
+sitesentry history
+sitesentry report <SCAN_ID>
+sitesentry config show
+sitesentry doctor
+```
+
+The CLI has no profile switch and always runs Advanced. `--format json` emits canonical JSON to stdout; `--output <path>` saves a JSON report copy. Successful scans return exit code 0 by default even when findings exist. `--fail-on high` returns 1 when a high/critical unresolved finding exists; runtime/scan errors return 2; invalid input, blocked scope, or omitted authorization confirmation returns 3. See the README for exact option usage.
 
 The dashboard calls the backend at `http://127.0.0.1:5000` by default. Set `SITESENTRY_API_URL` in the dashboard process environment when using another backend address. For a remote backend, the dashboard client requires HTTPS so the bearer token is not sent over remote plain HTTP.
 
@@ -400,6 +426,7 @@ When reporting a scan, use this order:
 ## 18. Source-of-truth files
 
 - Scan orchestration: [`scanner/engine.py`](../scanner/engine.py)
+- Terminal CLI: [`sitesentry/cli.py`](../sitesentry/cli.py), install metadata: [`pyproject.toml`](../pyproject.toml)
 - HTTP/TLS connection safety: [`scanner/transport.py`](../scanner/transport.py)
 - URL and scope policy: [`scanner/url_validation.py`](../scanner/url_validation.py)
 - Deterministic HTTP/TLS checks: [`scanner/checks.py`](../scanner/checks.py)

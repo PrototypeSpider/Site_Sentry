@@ -34,7 +34,8 @@ def failure_reason(report: dict, *, fail_on: str, min_risk: int) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run SiteSentry passive checks for an authorized deployment target.")
     parser.add_argument("--url", required=True, help="HTTP(S) URL on a standard port")
-    parser.add_argument("--profile", choices=("quick", "standard", "advanced"), default="standard")
+    parser.add_argument("--profile", choices=("advanced",), default="advanced",
+                        help="Scan profile is fixed to Advanced for the CLI tool.")
     parser.add_argument("--authorized", action="store_true", help="Confirm you are authorized to assess this target")
     parser.add_argument("--fail-on", choices=("none", "critical", "high", "medium", "low"), default="high")
     parser.add_argument("--min-risk", type=int, default=0, help="Fail when any unresolved finding risk score meets this value (1-100)")

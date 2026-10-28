@@ -44,6 +44,45 @@ Set `SITESENTRY_API_TOKEN` before starting the service; the authenticated admin 
 python app.py
 ```
 
+## Terminal CLI
+
+SiteSentry also installs as a terminal-native command. The CLI reuses the existing scanner and offers **Advanced only** as its single/default profile. It does not render a dashboard, and it does not call external scanners. Every scan remains passive and bounded.
+
+Install from the project root:
+
+```powershell
+python -m pip install -e .
+sitesentry --help
+```
+
+Run an authorized scan and save the canonical JSON report to the default report directory:
+
+```powershell
+sitesentry scan https://example.com --authorized
+```
+
+The `--authorized` flag is an explicit operator confirmation. `SITESENTRY_ALLOWED_DOMAINS`, when configured, remains enforced; private, loopback, link-local, reserved, and prohibited destinations are still blocked. URL query strings are rejected. The CLI uses the configured connect/read timeouts and stores local CLI history in the configured SQLite database.
+
+Useful commands:
+
+```powershell
+sitesentry scan --help
+sitesentry scan https://example.com --authorized --format json --output reports/example.json
+sitesentry history
+sitesentry report <SCAN_ID>
+sitesentry report reports/example.json --format json
+sitesentry config show
+sitesentry doctor
+sitesentry check-config
+sitesentry --version
+```
+
+The `sitesentry scan` command accepts no `--profile` option: all scans run Advanced checks. The older CI wrapper accepts only `--profile advanced`. The Flask API and Streamlit dashboard retain their own profile selector. `--format json` writes the normalized report to stdout; `--output` saves a JSON copy. Terminal text output is intended for operators, while JSON is suitable for pipelines.
+
+Exit codes: `0` means the scan completed (including when findings exist, unless a threshold was requested); `1` means `--fail-on` was reached; `2` means scan/runtime/storage failure; `3` means invalid input, rejected scope, or missing authorization confirmation. Example CI gate: `sitesentry scan https://example.com --authorized --format json --fail-on high`.
+
+Install optional AI provider libraries only when needed with `python -m pip install -e ".[ai]"`; providers remain optional to scan execution.
+
 ### Dashboard
 
 The dashboard is a server-side API client. It does not run its own scanner and never sends the API token to browser JavaScript. Configure `SITESENTRY_API_TOKEN` in the root `.env` file and run the backend and dashboard in separate terminals from the repository root:
@@ -75,7 +114,7 @@ Send `Authorization: Bearer <SITESENTRY_API_TOKEN>` for every API endpoint, incl
 An authorized CI job can run the same passive checks and use deterministic exit codes. The `--authorized` flag is mandatory; `SITESENTRY_ALLOWED_DOMAINS` remains enforced when configured. JSON is written to stdout and optionally to a file. The command does not enable external tools or active exploitation.
 
 ```powershell
-python -m integrations.ci_check --url https://example.com --profile standard --authorized --fail-on high --min-risk 0 --output sitesentry-report.json
+python -m integrations.ci_check --url https://example.com --profile advanced --authorized --fail-on high --min-risk 0 --output sitesentry-report.json
 ```
 
 Exit codes: `0` checks completed below the configured threshold, `1` threshold met, `2` scan did not complete. Use `--fail-on none --min-risk 60` to make the score threshold the gate. Risk score and severity remain separate.
