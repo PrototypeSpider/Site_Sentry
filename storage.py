@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 SCHEMA_VERSION = 5
 
@@ -15,11 +17,19 @@ class ScanStore:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         self.migrate()
 
-    def connect(self):
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.database_path, timeout=5)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def migrate(self):
         with self.connect() as conn:
